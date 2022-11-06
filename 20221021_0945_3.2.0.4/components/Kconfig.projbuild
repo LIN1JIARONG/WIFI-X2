@@ -1,0 +1,58 @@
+menu "My_Led Configuration"
+
+	config LED_GPIO
+		int "LED GPIO number"
+		range 0 46
+		default 5 if IDF_TARGET_ESP32
+		default 34 if IDF_TARGET_ESP32S2
+		default 19  if IDF_TARGET_ESP32C3
+		help
+			GPIO number (IOxx) to gpio out.
+			Some GPIOs are used for other purposes (flash connections, etc.) and cannot be used to gpio out.
+			On the ESP32, GPIOs 35-39 are input-only so cannot be used as outputs.
+			On the ESP32-S2, GPIO 46 is input-only so cannot be used as outputs.
+    
+endmenu
+
+menu "My_Uart1 Configuration"
+
+	config UART1_TXD_GPIO
+		int "UART1_TXD GPIO number"
+		range 0 46
+		default 5 if IDF_TARGET_ESP32
+		default 34 if IDF_TARGET_ESP32S2
+		default 4  if IDF_TARGET_ESP32C3
+		help
+			GPIO number (IOxx) to uart1.
+			Some GPIOs are used for other purposes (flash connections, etc.) and cannot be used to uart1.
+			On the ESP32, GPIOs 35-39 are input-only so cannot be used as outputs.
+			On the ESP32-S2, GPIO 46 is input-only so cannot be used as outputs.
+			
+	 config UART1_RXD_GPIO
+		int "UART1_RXD GPIO number"
+		range 0 46
+		default 5 if IDF_TARGET_ESP32
+		default 34 if IDF_TARGET_ESP32S2
+		default 5  if IDF_TARGET_ESP32C3
+		help
+			GPIO number (IOxx) to uart1.
+			Some GPIOs are used for other purposes (flash connections, etc.) and cannot be used to uart1.
+			On the ESP32, GPIOs 35-39 are input-only so cannot be used as outputs.
+			On the ESP32-S2, GPIO 46 is input-only so cannot be used as outputs.
+			
+ 
+endmenu
+menu "Example 'GATT SERVER' Config"
+
+    config SET_RAW_ADV_DATA
+        bool "Use raw data for advertising packets and scan response data"
+        help
+            If this config item is set, raw binary data will be used to generate advertising & scan response data.
+            This option uses the esp_ble_gap_config_adv_data_raw() and esp_ble_gap_config_scan_rsp_data_raw()
+            functions.
+
+            If this config item is unset, advertising & scan response data is provided via a higher-level
+            esp_ble_adv_data_t structure. The lower layer will generate the BLE packets. This option has higher
+            overhead at runtime.
+
+endmenu

@@ -1,0 +1,1003 @@
+/*
+ * iot_mqtt.c
+ *
+ *  Created on: 2021年12月6日
+ *      Author: Administrator
+ */
+#include "iot_mqtt.h"
+#include "mqtt.h"
+#include <string.h>
+#include <stdio.h>
+#include "iot_protocol.h"
+#include "iot_inverter.h"
+#include "iot_system.h"
+#include "iot_fota.h"
+#include "iot_ammeter.h"
+
+//#include <stdlib.h>
+//static const char *TAG = "MQTT";
+char _g_cCWTopicCtoS[50] = "c/33/";			// MQTT 服务器订阅客户端发送信息主题 固定
+char _g_cCWTopicStoC[50] = "s/33/";			// MQTT 服务器订阅客户端发送信息主题 固定
+char _g_cMqttClientid[30] = "MQTTWIFI33";   // clientid, 每个设备唯一 "LTE2011230" 采集器序列号
+char _g_cMqttUserName[30] = "MQTTWIFI33";   // 设备序列号
+
+char _g_cMqttPassword[50] = "Growatt";  	// "version=2018-10-31&res=products%2F394201%2Fdevices%2FLTE2011230&et=1924167328&method=md5&sign=Y2kSOx4g6kAxK0sDByOKng%3D%3D"
+//static char _g_cMqttData[512] = "2021-11-01 19:25:01";
+
+MQTT_STATE Mqtt_state;
+EMQTTREQ _g_EMQTTREQType;       // 平台TCP请求数据类型
+EMSG _g_EMSGMQTTSendTCPType;    // 平台TCP发送数据类型（实时数据/故障码/设置/获取...）
+
+uint16_t MQTT_Packet_ID;
+uint16_t MQTT_Packet_ACKID;
+uint16_t MQTT_Packet_ACKQOS;
+
+//uint32_t 	Mqtt_PINGTime    = 60*1 ;  	// MQTT 心跳时间 单位秒
+//uint32_t 	Mqtt_DATATime    = 5;		// MQTT 上报040 数据 时间 单位秒
+//uint32_t 	Mqtt_03DATATime  = 3;
+//uint32_t	Mqtt_AgainTime	 = 3;			// 重传数据时间 单位秒
+//uint32_t	Mqtt_Again_PASS	 = 0xFF;	    // 重传取消
+
+
+/************************************************
+ * SSL数据发送 进行MQTT打包
+ * ucSend_Type MQTT 发送的类型  登录/订阅/发布
+ * pucDataBuf_tem   发送的数据BUF
+ * **********************************************/
+unsigned int  IOT_MqttDataPack_ui(unsigned char ucSend_Type,   unsigned char *pucDataBuf_out, unsigned char * pSendTXbuf_in, uint16_t SendTXLen )
+{
+	uint16_t uiMQTTSendLen = 0;        	// mqtt 数据发送长度
+	char  pcMQTTTopic[100] =  {0};		// mqtt 数据发送主题，客户端根据不同的数据需求发送主题(默认发送实时数据)
+
+	memcpy(_g_cMqttClientid , &SysTAB_Parameter[Parameter_len[REG_SN]] , Collector_Config_LenList[REG_SN] );
+	memcpy(_g_cMqttUserName , &SysTAB_Parameter[Parameter_len[REG_SN]] , Collector_Config_LenList[REG_SN] );
+
+	switch(ucSend_Type)
+	{
+		case MQTT_CONTROL_CONNECT: // MQTT 登录  1
+		uiMQTTSendLen = mqtt_pack_connection_request(pucDataBuf_out, TCP_DATABUF_LEN,
+																	_g_cMqttClientid,
+																	NULL, NULL, 0,
+																	_g_cMqttUserName,
+																	_g_cMqttPassword,
+																	0, MQTT_PINGTIME);
+			break;
+		case MQTT_CONTROL_SUBSCRIBE: // MQTT 主题订阅 8
+		 	sprintf(pcMQTTTopic,"%s%s", _g_cCWTopicStoC,_g_cMqttClientid); // 得到订阅主题
+		 	if(++MQTT_Packet_ID>=65535)
+			{
+		 		MQTT_Packet_ID=0;
+			}
+		 	uiMQTTSendLen = mqtt_pack_subscribe_request(pucDataBuf_out, TCP_DATABUF_LEN,
+		 														 MQTT_Packet_ID,
+																 pcMQTTTopic, 1,
+//																 _g_cCWTopicStoC_Real, 1,
+			                                                     NULL);
+			break;
+		case MQTT_CONTROL_PUBLISH:  // MQTT 数据发送 3  (注：qos ！= 0 时，报文才会有标识符值)
+			if(++MQTT_Packet_ID>=65535)
+			{
+				MQTT_Packet_ID=0;
+			}
+			sprintf(pcMQTTTopic,"%s%s", _g_cCWTopicCtoS,_g_cMqttClientid); 		// 得到订阅主题
+			uiMQTTSendLen = mqtt_pack_publish_request(pucDataBuf_out,TCP_DATABUF_LEN,
+			                                                   pcMQTTTopic,
+															   MQTT_Packet_ID,
+															   pSendTXbuf_in,SendTXLen, (MQTT_QoS<<1));   //(MQTT_QoS<<1)
+			break;
+		case MQTT_CONTROL_PINGREQ:  // MQTT 心跳发送 12
+			uiMQTTSendLen = mqtt_pack_ping_request(pucDataBuf_out, TCP_DATABUF_LEN);
+			break;
+
+		case MQTT_CONTROL_PINGRESP:
+			uiMQTTSendLen = mqtt_pack_ping_requestACK(pucDataBuf_out, TCP_DATABUF_LEN);
+			break;
+		case MQTT_CONTROL_PUBACK:	// MQTT ACK  4
+			IOT_Printf("@@**  MQTT_Packet_ACKID  = %d **@@ \r\n",MQTT_Packet_ACKID);
+			uiMQTTSendLen = mqtt_pack_pubxxx_request(pucDataBuf_out ,
+													TCP_DATABUF_LEN,
+													MQTT_CONTROL_PUBACK,
+													MQTT_Packet_ACKID);
+			break;
+		default:
+			break;
+	}
+
+	return uiMQTTSendLen;
+}
+
+/****************************************************
+ * 定时上报数据时间
+ * ucMode_tem 定时上报时间 设置模式
+ * uiSetTime_tem 上报的时间计算  在定时器减
+ * **************************************************/
+uint8_t IOT_TCPDelaytimeSet_uc(uint8_t ucMode_tem, uint32_t uiSetTime_tem)
+{
+	if((uiSetTime_tem)&& (ucMode_tem == ESP_WRITE ))   // 写0 不赋值写大于 0的值才赋值
+	{
+		 Mqtt_state.MqttDATA_Time = uiSetTime_tem;
+	}
+	else if(ucMode_tem == ESP_WRITE)
+	{
+		if(Mqtt_state.MqttDATA_Time>0)
+		 Mqtt_state.MqttDATA_Time = Mqtt_state.MqttDATA_Time-1;    	 //MQTT 04数据
+		if(Mqtt_state.MqttPING_Time>0)
+		 Mqtt_state.MqttPING_Time =Mqtt_state.MqttPING_Time-1;       //MQTT 心跳包
+		if(Mqtt_state.Inverter_CMDTime>0)
+		 Mqtt_state.Inverter_CMDTime =Mqtt_state.Inverter_CMDTime -1;//逆变器轮训时间
+		if(Mqtt_state.AgainTime>0 && Mqtt_state.AgainTime!=0xFF)
+		 Mqtt_state.AgainTime =Mqtt_state.AgainTime -1;				 //MQTT 无应答 重发数据
+		if(Mqtt_state.WifiScan_Time>0 )
+		 Mqtt_state.WifiScan_Time=Mqtt_state.WifiScan_Time-1;	 	 //WiFi 重连
+		if(Mqtt_state.WifiConnect_Timeout > 0 )
+			Mqtt_state.WifiConnect_Timeout = Mqtt_state.WifiConnect_Timeout-1;	 	 //WiFi 重连
+		if(Mqtt_state.IPPORTset_Time >0 )
+		 Mqtt_state.IPPORTset_Time=Mqtt_state.IPPORTset_Time-1;	 	 //修改 IP 与 PORT
+		if(Mqtt_state.RestartTime >0 )								 //设备重启过时间
+		Mqtt_state.RestartTime =Mqtt_state.RestartTime -1;
+		if(Mqtt_state.InverterGetSN_Time >0 )							 //逆变器序列号获取  /重启
+		 Mqtt_state.InverterGetSN_Time =Mqtt_state.InverterGetSN_Time-1;
+		if(Mqtt_state.BLEOFF_Time > 0)
+		Mqtt_state.BLEOFF_Time =Mqtt_state.BLEOFF_Time-1;
+
+		if(Mqtt_state.Historydate_Time > 0)
+		Mqtt_state.Historydate_Time =Mqtt_state.Historydate_Time-1;
+
+		if(Mqtt_state.Heartbeat_Timeout > 0)				//心跳包发送超时时间
+		{
+			Mqtt_state.Heartbeat_Timeout--;
+		}
+
+		if(Mqtt_state.UpgradeDelay_Time > 0)				//升级延时
+		{
+			Mqtt_state.UpgradeDelay_Time--;
+		}
+		if(Mqtt_state.InverterRTData_TimeOut > 0)
+		{
+			Mqtt_state.InverterRTData_TimeOut--;
+		}
+		if(Mqtt_state.WifiConnect_Sever_Timeout > 0)
+		{
+			Mqtt_state.WifiConnect_Sever_Timeout--;
+		}
+	}
+	else if(ucMode_tem == ESP_READ)           // 查询计时时间
+	{
+		if(Mqtt_state.MqttDATA_Time == 0)
+		{
+			return ESP_OK1 ; // 计时结束
+		}
+	}
+	return ESP_FAIL1;
+}
+
+uint8_t IOT_PINGRESPSet_uc(uint8_t ucMode_tem, uint32_t uiSetTime_tem)
+{
+	if((uiSetTime_tem)&& (ucMode_tem == ESP_WRITE ))
+	{
+		Mqtt_state.MqttPING_Time= uiSetTime_tem;
+	}
+	else if(ucMode_tem == ESP_READ)           // 查询计时时间
+	{
+		if(Mqtt_state.MqttPING_Time == 0)
+		{
+			return ESP_OK1 ; // 计时结束
+		}
+	}
+	return ESP_FAIL1;
+}
+
+uint8_t IOT_InCMDTime_uc(uint8_t ucMode_tem, uint32_t uiSetTime_tem)
+{
+	if((uiSetTime_tem)&& (ucMode_tem == ESP_WRITE ))
+	{
+		Mqtt_state.Inverter_CMDTime= uiSetTime_tem;
+	}
+	else if(ucMode_tem == ESP_READ)           // 查询计时时间
+	{
+		if(Mqtt_state.Inverter_CMDTime == 0)
+		{
+			return ESP_OK1 ; // 计时结束
+		}
+	}
+	return ESP_FAIL1;
+}
+uint8_t IOT_INVgetSNtime_uc(uint8_t ucMode_tem, uint32_t uiSetTime_tem)
+{
+	if((uiSetTime_tem)&& (ucMode_tem == ESP_WRITE ))
+	{
+		Mqtt_state.InverterGetSN_Time = uiSetTime_tem;
+	}
+	else if(ucMode_tem == ESP_READ)           // 查询计时时间
+	{
+		if(Mqtt_state.InverterGetSN_Time == 0)
+		{
+			return ESP_OK1 ; // 计时结束
+		}
+	}
+	return ESP_FAIL1;
+}
+
+uint8_t IOT_WiFiScan_uc(uint8_t ucMode_tem, uint32_t uiSetTime_tem)
+{
+	if((uiSetTime_tem)&& (ucMode_tem == ESP_WRITE ))
+	{
+		Mqtt_state.WifiScan_Time= uiSetTime_tem;
+	}
+	else if(ucMode_tem == ESP_READ)           // 查询计时时间
+	{
+		if(Mqtt_state.WifiScan_Time == 0)
+		{
+			return ESP_OK1 ; // 计时结束
+		}
+	}
+	return ESP_FAIL1;
+}
+
+uint8_t IOT_UpgradeDelayTime_uc(uint8_t ucMode_tem, uint32_t uiSetTime_tem)
+{
+	if((uiSetTime_tem)&& (ucMode_tem == ESP_WRITE ))
+	{
+		Mqtt_state.UpgradeDelay_Time =  uiSetTime_tem;
+	}
+	else if(ucMode_tem == ESP_READ)           // 查询计时时间
+	{
+		if(Mqtt_state.UpgradeDelay_Time == 0)
+		{
+			return ESP_OK1 ; // 计时结束
+		}
+	}
+	return ESP_FAIL1;
+}
+
+
+
+uint8_t IOT_WiFiConnectTimeout_uc(uint8_t ucMode_tem, uint32_t uiSetTime_tem)
+{
+	if((uiSetTime_tem)&& (ucMode_tem == ESP_WRITE ))
+	{
+		Mqtt_state.WifiConnect_Timeout= uiSetTime_tem;
+	}
+	else if(ucMode_tem == ESP_READ)           // 查询计时时间
+	{
+		if(Mqtt_state.WifiConnect_Timeout == 0)
+		{
+			return ESP_OK1 ; // 计时结束
+		}
+	}
+	return ESP_FAIL1;
+}
+
+
+uint8_t IOT_WiFiConnect_Server_Timeout_uc(uint8_t ucMode_tem, uint32_t uiSetTime_tem)
+{
+	if((uiSetTime_tem)&& (ucMode_tem == ESP_WRITE ))
+	{
+		Mqtt_state.WifiConnect_Sever_Timeout= uiSetTime_tem;
+	}
+	else if(ucMode_tem == ESP_READ)           // 查询计时时间
+	{
+		if(Mqtt_state.WifiConnect_Sever_Timeout == 0)
+		{
+			return ESP_OK1 ; // 计时结束
+		}
+	}
+	return ESP_FAIL1;
+}
+
+
+uint8_t IOT_SYSRESTTime_uc(uint8_t ucMode_tem, uint32_t uiSetTime_tem)
+{
+	if((uiSetTime_tem)&& (ucMode_tem == ESP_WRITE ))
+	{
+		Mqtt_state.RestartTime= uiSetTime_tem;
+	}
+	else if(ucMode_tem == ESP_READ)           // 查询计时时间
+	{
+		if(Mqtt_state.RestartTime == 0)
+		{
+			return ESP_OK1 ; // 计时结束
+		}
+	}
+	return ESP_FAIL1;
+}
+uint8_t IOT_BLEofftime_uc(uint8_t ucMode_tem, uint32_t uiSetTime_tem)
+{
+	if((uiSetTime_tem)&& (ucMode_tem == ESP_WRITE ))
+	{
+		Mqtt_state.BLEOFF_Time= uiSetTime_tem;
+	}
+	else if(ucMode_tem == ESP_READ)           // 查询计时时间
+	{
+		if(Mqtt_state.BLEOFF_Time == 0)
+		{
+			return ESP_OK1 ; 			// 计时结束
+		}
+	}
+	return ESP_FAIL1;
+}
+//重新轮训发送数据查询
+uint8_t IOT_AgainTime_uc(uint8_t ucMode_tem, uint32_t uiSetTime_tem)
+{
+	if((uiSetTime_tem)&& (ucMode_tem == ESP_WRITE ))
+	{
+		Mqtt_state.AgainTime = uiSetTime_tem;
+	}
+	else if(ucMode_tem == ESP_READ)           // 查询计时时间
+	{
+		if(Mqtt_state.AgainTime == 0)
+		{
+			return ESP_OK1 ; // 计时结束
+		}
+	}
+	return ESP_FAIL1;
+}
+
+uint8_t IOT_IPPORTSet_us(uint8_t ucMode_tem, uint32_t uiSetTime_tem)
+{
+	if((uiSetTime_tem)&& (ucMode_tem == ESP_WRITE ))
+	{
+		Mqtt_state.IPPORTset_Time = uiSetTime_tem;
+	}
+	else if(ucMode_tem == ESP_READ)           // 查询计时时间
+	{
+		if(Mqtt_state.IPPORTset_Time == 0)
+		{
+			return ESP_OK1 ; // 计时结束
+		}
+	}
+	return ESP_FAIL1;
+
+}
+
+uint8_t IOT_Historydate_us(uint8_t ucMode_tem, uint32_t uiSetTime_tem)
+{
+	if((uiSetTime_tem)&& (ucMode_tem == ESP_WRITE ))
+	{
+		Mqtt_state.Historydate_Time = uiSetTime_tem;
+	}
+	else if(ucMode_tem == ESP_READ)           // 查询计时时间
+	{
+		if(Mqtt_state.Historydate_Time == 0)
+		{
+			return ESP_OK1 ; // 计时结束
+		}
+	}
+	return ESP_FAIL1;
+
+}
+
+
+uint8_t IOT_Heartbeat_Timeout_Check_uc(uint8_t ucMode_tem, uint32_t uiSetTime_tem)
+{
+	if((uiSetTime_tem)&& (ucMode_tem == ESP_WRITE ))
+	{
+		Mqtt_state.Heartbeat_Timeout = uiSetTime_tem;
+	}
+	else if(ucMode_tem == ESP_READ)           // 查询计时时间
+	{
+		if(Mqtt_state.Heartbeat_Timeout == 0)
+		{
+			return ESP_OK1 ; // 计时结束
+		}
+	}
+	return ESP_FAIL1;
+
+}
+
+
+uint8_t IOT_Inverter_RTData_TimeOut_Check_uc(uint8_t ucMode_tem, uint32_t uiSetTime_tem)
+{
+	if((uiSetTime_tem)&& (ucMode_tem == ESP_WRITE ))
+	{
+		Mqtt_state.InverterRTData_TimeOut = uiSetTime_tem;
+	}
+	else if(ucMode_tem == ESP_READ)           // 查询计时时间
+	{
+		if(Mqtt_state.InverterRTData_TimeOut == 0)
+		{
+			return ESP_OK1 ; // 计时结束
+		}
+	}
+	return ESP_FAIL1;
+
+}
+
+/******************************************************
+ * FunctionName : IOT_MqttRev_ui
+ * Description  :  MQTT数据包接收解析  是什么类型数据
+ * Parameters   : uint8_t *dst        : 即将要解析的数据server返回数据
+                  uint16_t suiLen_tem : 服务器返回数据总长度
+ * Returns      : 0 - 解析失败/1 - 解析成功
+ * Notice       : none
+*******************************************************/
+uint8_t IOT_MqttRev_ui(unsigned char *dst, uint16_t suiLen_tem)
+{
+
+	switch((dst[0]>>4))	   			 //
+	{
+		case MQTT_CONTROL_CONNACK:	 // MQTT登录 服务器应答 2       server返回值：20 02 00 00 (长度：4)
+			if((suiLen_tem == 4)&& \
+			((dst[0] == 0x20)  && (dst[1] == 0x02)  && \
+			((dst[2] == 0x00) || (dst[2] == 0x01))  ))
+			{
+				Mqtt_state.MQTT_connet = 1;
+				IOT_MqttSendStep_Set(1,8); 	 					// 登录发送完后 -- 触发订阅主题
+				return 	1;
+		    }
+			break;
+		case MQTT_CONTROL_SUBACK:   // MQTT主题订阅  服务器应答 9   90 3 0 a 1 (3长度)  +订阅Qos+订阅Qos
+		// server返回值：90 03 (uint8_t)(MQTT_IDENTIFIER>>4) (uint8_t)MQTT_IDENTIFIER 00 (长度：5) 00
+			if((suiLen_tem == 5)&& \
+			((dst[0] == 0x90) && (dst[1] == 0x03)  && \
+			/*20220829  MQTT_Packet_ID 右移4位改成 右移 8位*/
+			( dst[2] == (uint8_t)(MQTT_Packet_ID >> 8))   && (dst[3] == (uint8_t)MQTT_Packet_ID) &&\
+			((dst[4] == MQTT_QoS) || (dst[4] == 0x80))))
+			{
+
+//				_g_EMSGMQTTSendTCPType = EMSG_SYSTEM_POST;	 // MQTT订阅主题命令码后，定义发送publish一包数据发送类型  主动上报采集器信息
+//				IOT_MqttSendStep_Set(1,3);                	 // 订阅主题后 -- 触发发送数据   MQTT_CONTROL_PUBLISH
+//				登录成功，订阅主题之后  优化  先发心跳  通过心跳触发 上报数据。
+
+				if(1 == System_state.Pv_state)				//订阅主题后上传一次03数据
+				{
+					InvCommCtrl.HoldingSentFlag = 1 ;  		//20220826  新增在订阅主题后设置上传03数据
+				}
+
+				IOT_MqttSendStep_Set(1,12);
+				return 	1;
+			}
+			break;
+		case MQTT_CONTROL_PUBACK:   // MQTT发布 	  服务器应答 4      (注：qos ！= 0 时，报文才会有ID )
+		// server返回值：40 02 (uint8_t)(MQTT_IDENTIFIER>>4) (uint8_t)MQTT_IDENTIFIER (长度：4)
+			if (IOT_MQTTPublishACK_uc(dst,suiLen_tem)== ESP_OK1)   //  03 / 04  / 19  / 18  数据上报  服务器ACK
+			{
+				IOT_AgainTime_uc(ESP_WRITE,Mqtt_Again_PASS);
+			   	return 	1;
+			}
+			break;
+		case MQTT_CONTROL_PINGREQ:
+		//	if(	)
+			{
+				IOT_MqttSendStep_Set(1,13);
+				return 	1;
+			}
+
+			break;
+		case MQTT_CONTROL_PINGRESP: // MQTT心跳发送  服务器应答 13    server返回值：D0 00 (长度：2)
+			if((suiLen_tem == 2)&& \
+			((dst[0] == 0xD0) && (dst[1] == 0x00)))
+			{
+				IOT_PINGRESPSet_uc(ESP_WRITE,Mqtt_PINGTime);   // 重新装载心跳时间
+				IOT_ServerFunc_0x16( );   //心跳 应答标志位置为
+				return 1;
+			}
+			break;
+		case MQTT_CONTROL_PUBLISH:  // MQTT 收到服务器请求数据：3x xx (长度：x)
+			if( (dst[0] & 0x30) == 0x30)
+			{
+				MQTT_Packet_ACKQOS=(dst[0]& 0x06) >> 1;
+
+				IOT_Printf("MQTT_Packet_ACKQOS = %d\r\n",MQTT_Packet_ACKQOS);
+
+				for(int i = 0 ; i < suiLen_tem ; i++) IOT_Printf("%02x ",dst[i]);
+
+				IOT_Printf(" / **************************** \r\n");
+
+				if( IOT_MQTTPublishReq_uc(dst, suiLen_tem,MQTT_Packet_ACKQOS)==ESP_OK1)
+				{
+					return 	1;
+				}
+			}
+			break;
+		default:
+			break;
+	}
+	return 0;
+}
+
+void IOT_SetUpHolddate(void)
+{
+
+	IOT_InCMDTime_uc(ESP_WRITE,1);          //轮训 03 参数
+	InvCommCtrl.HoldingSentFlag = 1 ;  		// 主动上报， 设置参数，同步上传  //优化 等待3秒再上传  上传03
+	InvCommCtrl.SetUpInvDATAFlag =0;
+
+	IOT_TCPDelaytimeSet_uc(ESP_WRITE,5); // 重新赋值  数据上报时间 --03 //
+}
+
+/************************************************************
+ * MQTT 轮训检测 是否需要发送数据
+ * _g_EMQTTREQType MQTT 收到订阅消息 需要应答
+ * 置位发送状态 Mqtt_state.MqttSend_step = 3发布  / 0 不发
+ * **********************************************************/
+uint8_t IOT_ReadyForData(void)
+{
+	static uint8_t Mqtt_Againnum=0;
+
+	/* 有数据需要应答时，先应答 */
+ 	if(_g_EMQTTREQType) 			// IOT_ServerReceiveHandle  接收到服务器publish 请求
+	{
+ 		IOT_Printf( "*****IOT_ReadyForData** ****** _g_EMQTTREQType=%d*****System_state.Host_setflag=%x******\r\n",_g_EMQTTREQType,System_state.Host_setflag);
+
+		switch(_g_EMQTTREQType)
+		{
+			case MQTTREQ_SET_TIME:
+				break;
+			case MQTTREQ_CMD_0x05 :
+				if(System_state.Host_setflag & CMD_0X05 )   	// 服务器查询置位
+				{
+					if(!(InvCommCtrl.CMDFlagGrop & CMD_0X05 ))  // 接收逆变器应答清位  等待 其他线程完成数据处理
+					{
+						if(MQTT_Packet_ACKQOS && (InvCommCtrl.Set_InvRespondCode == PV_ACKOK))  //如果信息质量  > 1 回复 ACK 新加机制，若设置失败 ，应答错误情况不ACK 回 publish
+						{
+							IOT_MqttSendStep_Set(1,4);			// ACK
+						}
+						else
+						{
+							_g_EMSGMQTTSendTCPType =  EMSG_GET_INVINFO_RESPONSE ;
+							IOT_MqttSendStep_Set(1,3);			// publish
+						}
+						 _g_EMQTTREQType = MQTTREQ_NULL;		//
+						 IOT_Printf( "************* MQTTREQ_CMD_0x05   Ready Send*************\r\n");
+					}
+				}
+				break;
+			case MQTTREQ_CMD_0x06 :
+				if(System_state.Host_setflag & CMD_0X06 )   	// 服务器设置置位
+				{
+					if(!(InvCommCtrl.CMDFlagGrop & CMD_0X06 ))  // 接收逆变器应答清位 等待 其他线程完成数据处理
+					{
+						if(MQTT_Packet_ACKQOS  && (InvCommCtrl.Set_InvRespondCode == PV_ACKOK) ) //如果信息质量>1回复 ACK新加机制，若设置失败 ，应答错误情况不ACK 回 publish
+						{
+							IOT_MqttSendStep_Set(1,4);			// ACK
+						}
+						else
+						{
+							_g_EMSGMQTTSendTCPType =  EMSG_GET_INVREG_RESPONSE ;
+							IOT_MqttSendStep_Set(1,3);			// publish
+						}
+						_g_EMQTTREQType = MQTTREQ_NULL;
+						IOT_Printf( "************* MQTTREQ_CMD_0x06   Ready Send*************\r\n");
+
+					    IOT_SetUpHolddate();
+//						IOT_InCMDTime_uc(ESP_WRITE,1);          //轮训 03 参数
+//						InvCommCtrl.HoldingSentFlag = 1 ;  		// 主动上报， 设置参数，同步上传  //优化 等待3秒再上传  上传03
+//						IOT_TCPDelaytimeSet_uc(ESP_WRITE,5); // 重新赋值  数据上报时间 --03 //
+//						InvCommCtrl.SetUpInvDATAFlag =0;
+
+					}
+				}
+				break;
+			case MQTTREQ_CMD_0x10 :
+				if(System_state.Host_setflag & CMD_0X10   )   	// 服务器设置置位
+				{
+					if(!(InvCommCtrl.CMDFlagGrop & CMD_0X10 ))  // 接收逆变器应答清位 等待 其他线程完成数据处理
+					{
+						if(MQTT_Packet_ACKQOS && (InvCommCtrl.Set_InvRespondCode == PV_ACKOK))    				//如果信息质量  > 1 回复    ACK
+						{
+							IOT_MqttSendStep_Set(1,4);			// ACK
+						}
+						else
+						{
+							_g_EMSGMQTTSendTCPType =  EMSG_GET_INVREG_RESPONSE ;
+							IOT_MqttSendStep_Set(1,3);			// publish
+						}
+						_g_EMQTTREQType = MQTTREQ_NULL;
+						IOT_Printf( "************* MQTTREQ_CMD_0x10   Ready Send*************\r\n");
+					}
+				}
+				break;
+			case MQTTREQ_CMD_0x18 :
+				if(System_state.Host_setflag & CMD_0X18)   		// 服务器查询置位
+				{
+				//	if(!(InvCommCtrl.CMDFlagGrop & CMD_0X18))   // 接收逆变器应答清位 等待 其他线程完成数据处理
+					{
+						if(MQTT_Packet_ACKQOS)    				// 如果信息质量  > 1 回复    ACK
+						{
+							IOT_MqttSendStep_Set(1,4);			// ACK
+						}
+						else
+						{
+							_g_EMSGMQTTSendTCPType =  EMSG_GET_DLIREG_RESPONSE ;
+							IOT_MqttSendStep_Set(1,3);			// publish
+						}
+						 _g_EMQTTREQType = MQTTREQ_NULL;
+						 IOT_Printf( "************* MQTTREQ_CMD_0x18   Ready Send*************\r\n");
+
+					}
+				}
+				break;
+			case MQTTREQ_CMD_0x19 :
+				if(System_state.Host_setflag & CMD_0X19 )   	// 服务器查询置位
+				{
+				//	if(!(InvCommCtrl.CMDFlagGrop & CMD_0X19 ))  // 接收逆变器应答清位 等待 其他线程完成数据处理
+					{
+						if(MQTT_Packet_ACKQOS )    			// 如果信息质量  > 1 回复 ACK 新加机制，若设置失败 ，应答错误情况不ACK 回 publish
+						{
+							IOT_MqttSendStep_Set(1,4);			// ACK
+						}
+						else
+						{
+							_g_EMSGMQTTSendTCPType =  EMSG_GET_DLINFO_RESPONSE ;
+							IOT_MqttSendStep_Set(1,3);			// publish
+							_g_EMQTTREQType = MQTTREQ_NULL;
+						}
+
+						IOT_Printf( "************* MQTTREQ_CMD_0x19   Ready Send**MQTT_Packet_ACKQOS=%d***********\r\n",MQTT_Packet_ACKQOS);
+					}
+				}
+				break;
+			default:
+				break;
+		}
+	  // IOT_MqttSendStep_Set(1,3); // 触发发送publish数据
+
+		if(Mqtt_state.MqttSend_step != 0x00)
+		{
+			IOT_Printf( "*******Mqtt_state.MqttSend_step=%d****** _g_EMSGMQTTSendTCPType=%d***********\r\n",Mqtt_state.MqttSend_step,_g_EMSGMQTTSendTCPType);
+
+		   return ESP_READY;// 数据准备发送
+		}
+	}
+
+ 	/* 自主上传数据给服务器 */
+	if(_g_EMSGMQTTSendTCPType == EMSG_NULL )
+	{
+		if(IOT_PINGRESPSet_uc(ESP_READ,0)==ESP_OK1)          // 发送心跳
+		{
+			IOT_AgainTime_uc(ESP_WRITE,Mqtt_AgainTime);
+			IOT_PINGRESPSet_uc(ESP_WRITE,Mqtt_PINGTime);  	 //	重新赋值避免500ms轮训
+			IOT_MqttSendStep_Set(1,12); 		  			 //	触发发送PING数据
+			IOT_Printf( "*************PING Ready Send*******Mqtt_PINGTime=%d******\r\n",Mqtt_PINGTime);
+			return ESP_READY;	// 数据准备发送
+		}
+		else if((System_state.UploadParam_Flag == 1) && ( System_state.Server_Online == 1)) // 发送完成心跳，上报采集器参数
+		{
+			IOT_Printf( "\r\nIOT_ReadyForData ESP_READY*******Mqtt_state.MqttSend_step=%d****** _g_EMSGMQTTSendTCPType=%d***********\r\n",Mqtt_state.MqttSend_step,_g_EMSGMQTTSendTCPType);
+
+			 IOT_MqttSendStep_Set(1,3);
+			 IOT_AgainTime_uc(ESP_WRITE,Mqtt_AgainTime);
+			 _g_EMSGMQTTSendTCPType = EMSG_SYSTEM_POST;
+			 IOT_Printf( "*************0x19 IOT_UploadParamSelf Ready Send*************\r\n");
+			 return ESP_READY;	// 数据准备发送
+		}
+		else if( (System_state.updatetimeflag == 1) && (InvCommCtrl.HoldingSentFlag == 1 )  &&  (System_state.Server_Online==1 )  && (InvCommCtrl.SetUpInvDATAFlag == 1 )  )	  // 当设备获取到03数据 置位 主动上报0x03逆变器数据需要优化！
+		{//&& (IOT_TCPDelaytimeSet_uc(ESP_READ,0)==ESP_OK1 )
+			 IOT_MqttSendStep_Set(1,3);
+			 IOT_AgainTime_uc(ESP_WRITE,Mqtt_AgainTime);	 // 设置重传时间  --- 如果AgainTime 之前没有ACK 则重新进入上报时间准备完成
+			 _g_EMSGMQTTSendTCPType = EMSG_INVPARAMS_POST;
+			 IOT_Printf("\r\n*************0X03 Ready Send*************\r\n");
+			 return ESP_READY;	// 数据准备发送
+		}
+		else if((System_state.updatetimeflag==1) && (System_state.Pv_state==1 )  )//	定时上报0x04逆变器数据(IOT_TCPDelaytimeSet_uc(ESP_READ,0)==ESP_OK1 )
+		{
+			 System_state.updatetimeflag=0;
+			 _g_EMSGMQTTSendTCPType=EMSG_ONLINE_POST;		 //	0x04数据类型
+			 IOT_MqttSendStep_Set(1,3);						 //	触发发送publish数据
+			 IOT_AgainTime_uc(ESP_WRITE,Mqtt_AgainTime);	 // 设置重传时间  --- 如果AgainTime 之前没有ACK 则重新进入上报时间准备完成
+		   //IOT_TCPDelaytimeSet_uc(ESP_WRITE,Mqtt_DATATime);// 重新计时  --- 应该在 ACK 之后
+			 IOT_Printf( "*************0X04 Ready Send******Mqtt_DATATime=%d*******\r\n",Mqtt_DATATime);
+			 return ESP_READY;	// 数据准备发送
+		}
+		else if(1 == IOT_UpdateProgress_Upload_Handle(0xff))		//查询是否需要上传升级进度		/*#include "iot_fota.h"*/
+		{
+			 _g_EMSGMQTTSendTCPType = EMSG_PROGRESS_POST;	 //	升级进度类型
+			 IOT_MqttSendStep_Set(1,3);						 //	触发发送publish数据
+			 IOT_AgainTime_uc(ESP_WRITE,Mqtt_AgainTime);	 // 设置重传时间  --- 如果AgainTime 之前没有ACK 则重新进入上报时间准备完成
+		   //IOT_TCPDelaytimeSet_uc(ESP_WRITE,Mqtt_DATATime);// 重新计时  --- 应该在 ACK 之后
+			 IOT_Printf( "*************upload progress Ready Send******Mqtt_DATATime=%d*******\r\n",Mqtt_DATATime);
+			 return ESP_READY;	// 数据准备发送
+		}
+#if	 test_wifi
+		else if((System_state.upHistorytimeflag==1)  &&  (System_state.Server_Online==1 ) )
+		{
+			System_state.upHistorytimeflag=0;
+			 _g_EMSGMQTTSendTCPType = EMSG_OFFLINE_POST;
+			 IOT_MqttSendStep_Set(1,3);						 //	触发发送publish数据
+			 IOT_AgainTime_uc(ESP_WRITE,Mqtt_AgainTime);	 //
+			 IOT_Printf( "*************upHistorytimeflag  Ready Send******Mqtt_DATATime=%d*******\r\n",Mqtt_DATATime);
+			 return ESP_READY;	// 数据准备发送
+		}
+		else if((uAmmeter.UpdateMeterFlag ==2  ) && (System_state.Server_Online==1 )  )
+		{
+			 uAmmeter.UpdateMeterFlag=3;
+			 _g_EMSGMQTTSendTCPType = EMSG_AMMTER_POST;
+			 IOT_MqttSendStep_Set(1,3);						 //	触发发送publish数据
+			 IOT_AgainTime_uc(ESP_WRITE,Mqtt_AgainTime);	 //
+			 IOT_Printf( "************* EMSG_AMMTER_POST Ready Send******Mqtt_DATATime=%d*******\r\n",Mqtt_DATATime);
+			 return ESP_READY;	// 数据准备发送
+		}
+		else if((IOT_GET_Histotymeter_Flag()==2  ) && (System_state.Server_Online==1 )  )
+		{
+			 IOT_SET_Histotymeter_Flag(3);
+			 _g_EMSGMQTTSendTCPType = EMSG_HISTORY_AMMTER_POST;
+			 IOT_MqttSendStep_Set(1,3);						 //	触发发送publish数据
+			 IOT_AgainTime_uc(ESP_WRITE,Mqtt_AgainTime);	 //
+			 IOT_Printf( "************* EMSG_HISTORY_AMMTER_POST Ready Send******Mqtt_DATATime=%d*******\r\n",Mqtt_DATATime);
+			 return ESP_READY;	// 数据准备发送
+		}
+		else if( System_state.up14dateflag == 1 )
+		{
+			 //IOT_SET_Histotymeter_Flag(3);
+			 _g_EMSGMQTTSendTCPType = EMSG_INVWAVE_POST;
+			 IOT_MqttSendStep_Set(1,3);						 //	触发发送publish数据
+			 IOT_AgainTime_uc(ESP_WRITE,Mqtt_AgainTime);	 //
+			 IOT_Printf( "************* EMSG_INVWAVE_POST Ready Send******Mqtt_DATATime=%d*******\r\n",Mqtt_DATATime);
+			 return ESP_READY;	// 数据准备发送
+		}
+		else if( System_state.upBDC03dateflag == 1 )
+		{
+			 _g_EMSGMQTTSendTCPType = EMSG_BDC03_POST;
+			 IOT_MqttSendStep_Set(1,3);						 //	触发发送publish数据
+			 IOT_AgainTime_uc(ESP_WRITE,Mqtt_AgainTime);	 //
+			 IOT_Printf( "************* EMSG_BDC03_POST Ready Send******Mqtt_DATATime=%d*******\r\n",Mqtt_DATATime);
+			 return ESP_READY;	// 数据准备发送
+		}
+		else if( System_state.upBDC04dateflag == 1 )
+		{
+			 _g_EMSGMQTTSendTCPType = EMSG_BDC04_POST;
+			 IOT_MqttSendStep_Set(1,3);						 //	触发发送publish数据
+			 IOT_AgainTime_uc(ESP_WRITE,Mqtt_AgainTime);	 //
+			 IOT_Printf( "************* EMSG_BDC04_POST Ready Send******Mqtt_DATATime=%d*******\r\n",Mqtt_DATATime);
+			 return ESP_READY;	// 数据准备发送
+		}
+		else if( System_state.upBMS03dateflag == 1 )
+		{
+			 _g_EMSGMQTTSendTCPType = EMSG_BMS03_POST;
+			 IOT_MqttSendStep_Set(1,3);						 //	触发发送publish数据
+			 IOT_AgainTime_uc(ESP_WRITE,Mqtt_AgainTime);	 //
+			 IOT_Printf( "************* EMSG_BMS03_POST Ready Send******Mqtt_DATATime=%d*******\r\n",Mqtt_DATATime);
+			 return ESP_READY;	// 数据准备发送
+		}
+		else if( System_state.upBMS04dateflag == 1 )
+		{
+			 _g_EMSGMQTTSendTCPType = EMSG_BMS04_POST;
+			 IOT_MqttSendStep_Set(1,3);						 //	触发发送publish数据
+			 IOT_AgainTime_uc(ESP_WRITE,Mqtt_AgainTime);	 //
+			 IOT_Printf( "************* EMSG_BMS04_POST Ready Send******Mqtt_DATATime=%d*******\r\n",Mqtt_DATATime);
+			 return ESP_READY;	// 数据准备发送
+		}
+#endif
+	}
+	else
+	{
+		if( IOT_AgainTime_uc(ESP_READ,0)==ESP_OK1)			 //	是否可以发数据
+		{
+			 if(Mqtt_Againnum++ >5 )  //重发5次 就不发、
+			 {
+				 Mqtt_Againnum =0 ;
+				 _g_EMSGMQTTSendTCPType = EMSG_NULL;
+				 IOT_AgainTime_uc(ESP_WRITE,Mqtt_Again_PASS);
+			 }
+			 else
+			 {
+				 IOT_AgainTime_uc(ESP_WRITE,Mqtt_AgainTime + Mqtt_Againnum);
+				 IOT_MqttSendStep_Set(1,3);
+			 }
+			 IOT_Printf(" ESP_READY  Mqtt_state.AgainTime =%d******\r\n",Mqtt_state.AgainTime);
+			 return ESP_READY;	// 数据准备发送
+		}
+	}
+	return ESP_ONREADY;// 无数据发送
+}
+
+/*********************************************
+ * MQTT 发送步骤 设置
+ * Mqtt_state.MqttSend_step =  登录/订阅/发布/心跳
+ * ******************************************/
+void IOT_MqttSendStep_Set(uint8_t ucMode_tem, uint8_t ucStep_tem)
+{
+	if(ucMode_tem == 0)
+	{
+		if(Mqtt_state.MqttSend_step == 1)Mqtt_state.MqttSend_step = 8;         // 登录发送完后 -- 触发订阅主题
+		else if(Mqtt_state.MqttSend_step == 8)Mqtt_state.MqttSend_step = 3;    // 订阅主题发送完后 -- 发送数据
+		else if(Mqtt_state.MqttSend_step == 3)Mqtt_state.MqttSend_step = 0;    // 数据发送完后 -- 结束发送
+		else if(Mqtt_state.MqttSend_step == 12)Mqtt_state.MqttSend_step = 0;   // 心跳发送完后 -- 结束发送
+	}
+	else if(ucMode_tem == 1 )
+	{
+		if((ucStep_tem == 0) || (ucStep_tem == 1))  // 清空MQTT发送命令 / 或接上服务器开始发送MQTT登录命令码
+		{
+			Mqtt_state.MqttSend_step = ucStep_tem;  // 清空 / 得到MQTT数据发送的类型
+		}
+		else if(Mqtt_state.MqttSend_step == 0)  	// 设置命令时需要当前发送命令码为空才能设置，避免数据发送错乱
+		{
+			Mqtt_state.MqttSend_step = ucStep_tem;  // 得到MQTT数据发送的类型
+		}
+	}
+}
+
+/******************************************************************************
+ * FunctionName : IOT_MQTTPublishReq_Judge_uint8_t
+ * Description  : 接收服务器数据判断判断
+ * Parameters   : uint8_t *dst        : 即将要解析的数据server返回数据
+                  uint16_t suiLen_tem : 服务器返回数据总长度
+ * Returns      : 0 - 解析失败 / 1 - 解析成功
+ * Notice       : none
+*******************************************************************************/
+uint8_t IOT_MQTTPublishReq_uc(uint8_t *pucDst_tem, uint16_t suiLen_tem, uint8_t uQoc)
+{
+	uint8_t ucHeadLen = 0;   	 // 固定头 + 数据包数据总长度  2/3byte
+	uint8_t Publish_dataaddr=0;  // 实际服务器数据开始地址
+	uint16_t usiDataLen =0; 	 // topic长度 + topic字符串 + 有效载荷-数据 nbyte
+	uint16_t Publish_Len=0;  	 // 总包长度
+	uint16_t Publish_TopicLen=0; // 订阅主题长度
+	uint16_t Publish_dataLen=0;  // 实际数据的长度 = 总- 订阅主题 - ID
+//	EMQTTREQ MQTTREQTypeVal=MQTTREQ_NULL;
+	struct mqtt_response SMQTTResponse;
+//	uint8_t *pPublishbuf = NULL;
+//	uint8_t pcANDTopic[50];
+//	uint8_t ucANDTopicLen=0;
+//	sprintf(pcANDTopic,"%s%s", _g_cCWTopicStoC,_g_cMqttClientid); // 得到订阅主题
+//	ucANDTopicLen =strlen(pcANDTopic);  //得到订阅主题的长度
+	ucHeadLen = mqtt_unpack_fixed_header(&SMQTTResponse, (const uint8_t*)pucDst_tem, suiLen_tem);
+	usiDataLen = mqtt_unpack_publish_response(&SMQTTResponse,(const uint8_t*)&pucDst_tem[ucHeadLen]);
+	IOT_Printf("\r\n**********************IOT_MQTTPublishReq_uc**************************\r\n");
+	IOT_Printf("\r\n**********************ucHeadLen=%d**************************\r\n",ucHeadLen);
+	IOT_Printf("\r\n**********************usiDataLen=%d**************************\r\n",usiDataLen);
+//	pPublishbuf=pucDst_tem+ucHeadLen;
+	if((ucHeadLen+usiDataLen) == suiLen_tem) // 接收数据符合mqtt publish格式
+	{
+// 头 + 头len（2） + 主题len（2） +主题 + ID（2） + data
+		#define _SQUARE_128  (16384)	//128 平方
+		#define _CUBE_128  	(2097152)	//128 立方
+		uint32_t uiBUffOffset = 0;
+		Publish_Len = 0;
+		if(pucDst_tem[1] > 0x7F)	// 总包长度 (除去头+len)  =usiDataLen
+		{
+			if(pucDst_tem[2] > 0x7F)
+			{
+				if(pucDst_tem[3] > 0x7F)
+				{
+					Publish_Len = pucDst_tem[4] * _CUBE_128;
+					uiBUffOffset++;
+				}
+				Publish_Len += (pucDst_tem[3] & 0x7F) * _SQUARE_128;
+				uiBUffOffset++;
+			}
+			Publish_Len += (pucDst_tem[2] & 0x7F) * 128;
+			uiBUffOffset++;
+		}
+
+		Publish_Len += pucDst_tem[1] & 0x7F;
+
+
+		Publish_TopicLen = pucDst_tem[2 + uiBUffOffset];
+		Publish_TopicLen = (Publish_TopicLen << 8) +pucDst_tem[3 + uiBUffOffset];	// 订阅主题长度
+		if(uQoc == 0)  						 						// 信息质量是 0  标准MQTT 不带消息ID
+		{
+			Publish_dataLen = abs( Publish_Len - Publish_TopicLen -2);  // 缺少  ID
+			Publish_dataaddr =  Publish_TopicLen + 4;  					// 实际服务器数据开始地址
+		}
+		else
+		{
+			Publish_dataLen  =  abs(Publish_Len - Publish_TopicLen -4) ;    // 实际数据的长度 = 总- 订阅主题 - 订阅主题len - ID
+			MQTT_Packet_ACKID = pucDst_tem[Publish_TopicLen + ucHeadLen +2 ];  //19 20
+			MQTT_Packet_ACKID = (MQTT_Packet_ACKID<< 8 ) + pucDst_tem[Publish_TopicLen + ucHeadLen + 3 ] ;
+			Publish_dataaddr =  Publish_TopicLen+6;  	 // 实际服务器数据开始地址
+		}
+
+//		IOT_Printf("\r\n******************************************************************\r\n ");
+//	   	/* Print response directly to stdout as it is read */
+//	   	for(int i = 0; i < suiLen_tem; i++) {
+//	   	   IOT_Printf("%02x ",pucDst_tem[i]);
+//	   	}
+
+		IOT_Printf("\r\n**********************uiBUffOffset =%d**************************\r\n",uiBUffOffset);
+		IOT_Printf("\r\n**********************Publish_Len =%d**************************\r\n",Publish_Len);
+		IOT_Printf("\r\n**********************Publish_Topic_Len=%d**************************\r\n",Publish_TopicLen);
+		IOT_Printf("\r\n**********************Publish_data_Len=%d**************************\r\n",Publish_dataLen);
+		IOT_Printf("\r\n**********************MQTT_Packet_ACKID=%d**************************\r\n",MQTT_Packet_ACKID);
+		IOT_Printf("\r\n**********************Publish_dataaddr =%d**************************\r\n",Publish_dataaddr);
+		IOT_Printf("\r\n**********************uQoc =%d**************************\r\n",uQoc);
+		_g_EMQTTREQType =  IOT_ServerReceiveHandle(&pucDst_tem[Publish_dataaddr + uiBUffOffset],Publish_dataLen );
+
+//		if(uQoc)   // 如果带质量是1 的直接应答ACK
+//		{
+//			_g_EMQTTREQType= MQTTREQ_NULL;
+//			IOT_MqttSendStep_Set(1,4);     //  需要优化至轮训接收完成
+//		}
+//		else
+//		{
+//			_g_EMQTTREQType= MQTTREQTypeVal;
+//		}
+//优化应答
+		IOT_Printf("\r\n**********************_g_EMQTTREQType =%d**************************\r\n",_g_EMQTTREQType);
+		return ESP_OK1;
+	}
+	return ESP_FAIL1;
+}
+
+
+/******************************************************************************
+ * FunctionName : IOT_MQTTPublishACK_uc
+ * Description  : 采集器MQTTPublish  服务器ACK 解析
+ * Parameters   : uint8_t *dst        : 即将要解析的数据server返回数据
+                  uint16_t suiLen_tem : 服务器返回数据总长度
+ * Returns      : 0 - 解析失败 / 1 - 解析成功
+ * Notice       : 常用于//  03 / 04  / 19  / 18  数据上报    比较数据上报的ID  与ACK的 ID 是否一致
+*******************************************************************************/
+uint8_t IOT_MQTTPublishACK_uc(uint8_t *pucDst_tem, uint16_t suiLen_tem)
+{
+	if((suiLen_tem == 4)&&(pucDst_tem[0] == 0x40)&&(pucDst_tem[1] == 0x02))
+	{
+		MQTT_Packet_ACKID = pucDst_tem[2];
+		MQTT_Packet_ACKID = ((uint16_t )MQTT_Packet_ACKID << 8) + pucDst_tem[3];
+		IOT_Printf("\r\n*************MQTT_Packet_ACKID=%d*************MQTT_Packet_ID=%d*********_g_EMSGMQTTSendTCPType%d****\r\n",MQTT_Packet_ACKID,MQTT_Packet_ID,_g_EMSGMQTTSendTCPType);
+		if(MQTT_Packet_ACKID == MQTT_Packet_ID  )  //System_state.bCID_0x04
+		{
+			if(_g_EMSGMQTTSendTCPType == EMSG_INVPARAMS_POST)    // 发0x03 数据应答
+			{
+				InvCommCtrl.HoldingSentFlag = 0;    			 // 发送完成
+				//_g_EMSGMQTTSendTCPType = EMSG_ONLINE_POST;
+				//IOT_MqttSendStep_Set(1,3);                  	 // 订阅主题后 -- 触发发送04数据
+
+				_g_EMSGMQTTSendTCPType = EMSG_NULL;
+				IOT_TCPDelaytimeSet_uc(ESP_WRITE,Mqtt_DATATime); // 重新赋值 04 数据上报时间
+				//IOT_TCPDelaytimeSet_uc(ESP_WRITE,System_state.Up04dateTime+1);
+
+			}
+			else if (_g_EMSGMQTTSendTCPType == EMSG_ONLINE_POST )// 发04 数据 应答
+			{
+				_g_EMSGMQTTSendTCPType = EMSG_NULL;
+				uAmmeter.UpdateMeterFlag = 1 ;  //触发上报电表
+			// 	IOT_TCPDelaytimeSet_uc(ESP_WRITE,Mqtt_DATATime); // 重新赋值 04 数据上报时间
+			// 	IOT_TCPDelaytimeSet_uc(ESP_WRITE,System_state.Up04dateTime+1);
+			}
+			else if(_g_EMSGMQTTSendTCPType == EMSG_SYSTEM_POST ) // 主动上报 19 数据采集器参数
+			{
+				System_state.UploadParam_Flag =0;
+				_g_EMSGMQTTSendTCPType = EMSG_NULL;
+			}
+			else if(  _g_EMSGMQTTSendTCPType == EMSG_GET_INVINFO_RESPONSE) // 逆变器参数获取 0x05查询数据
+			{
+				System_state.Host_setflag &= ~CMD_0X05;
+				_g_EMSGMQTTSendTCPType = EMSG_NULL;
+			}
+			else  if(_g_EMSGMQTTSendTCPType == EMSG_GET_DLINFO_RESPONSE )  // 服务器查询采集器参数的指令 0x19
+			{
+				System_state.Host_setflag &= ~CMD_0X19;
+				_g_EMSGMQTTSendTCPType = EMSG_NULL;
+			}
+			else if(_g_EMSGMQTTSendTCPType == EMSG_OFFLINE_POST )
+			{
+				_g_EMSGMQTTSendTCPType = EMSG_NULL;
+			}
+			else if(_g_EMSGMQTTSendTCPType == EMSG_AMMTER_POST )
+			{
+				_g_EMSGMQTTSendTCPType = EMSG_NULL;
+			}
+			else if(_g_EMSGMQTTSendTCPType == EMSG_HISTORY_AMMTER_POST )
+			{
+				_g_EMSGMQTTSendTCPType = EMSG_NULL;
+				IOT_SET_Histotymeter_Flag(0);
+			}
+			else if(_g_EMSGMQTTSendTCPType == EMSG_INVWAVE_POST)
+			{
+				System_state.up14dateflag=0;
+				IOT_ServerACK_0x14();
+				_g_EMSGMQTTSendTCPType = EMSG_NULL;
+			}
+			else if(_g_EMSGMQTTSendTCPType == EMSG_BDC03_POST)
+			{
+				_g_EMSGMQTTSendTCPType = EMSG_NULL;
+			}
+			else if(_g_EMSGMQTTSendTCPType == EMSG_BDC04_POST)
+			{	_g_EMSGMQTTSendTCPType = EMSG_NULL;
+			}
+			else
+			{
+				_g_EMSGMQTTSendTCPType = EMSG_NULL;
+			}
+		}
+		return ESP_OK1;
+	}
+	return ESP_FAIL1;
+}
+
+
+
+
+
+
