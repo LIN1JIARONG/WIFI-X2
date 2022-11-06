@@ -1,6 +1,6 @@
 /*
  * main.c
- *  Created on: 2021Äê12ÔÂ1ÈÕ
+ *  Created on: 2021å¹´12æœˆ1æ—¥
  *  Author: Administrator
  */
 #include <stdio.h>
@@ -52,31 +52,31 @@ TaskHandle_t NetTX_Handle = NULL;
 //TaskHandle_t HTTP_Handle = NULL;
 
 
-////ÓÃ»§×Ô¶¨ÒåµÄÊı¾İ
-//¹Ì¶¨µÄÎ»ÖÃÆ«ÒÆ sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + sizeof(esp_app_desc_t) 24 + 8 + 256 = 288 ×Ö½Ú Ö®ºó
+////ç”¨æˆ·è‡ªå®šä¹‰çš„æ•°æ®
+//å›ºå®šçš„ä½ç½®åç§» sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + sizeof(esp_app_desc_t) 24 + 8 + 256 = 288 å­—èŠ‚ ä¹‹å
 typedef struct {
 	char USER_DATA[USER_DATA_LEN];
 
-} __attribute__((packed)) esp_custom_app_desc_t;	//Ç¿ÖÆÒÔ1×Ö½ÚµØÖ·¶ÔÆë
+} __attribute__((packed)) esp_custom_app_desc_t;	//å¼ºåˆ¶ä»¥1å­—èŠ‚åœ°å€å¯¹é½
 
 
 const __attribute__((section(".rodata_custom_desc"))) esp_custom_app_desc_t custom_app_desc = {.USER_DATA = {DATALOG_TYPE} };
 
 
 /*
- * 20220708   ĞŞ¸´HTTPÏÂÔØ±¨302´íÎóÂëÎÊÌâ £º ÅäÖÃHTTP²ÎÊıĞèÒª¸½×ÅÖ¤Êé°ü£¬URL ĞèÒªÎªHTTPSÍøÕ¾
- * 20220708   Ôö¼ÓÔÚÏÂÔØ²É¼¯Æ÷¹Ì¼şÍê³Éºó£¬Ğ£Ñé¹Ì¼şµÄÉè±¸ÀàĞÍ
- * 20220711   ĞŞ¸Ä²É¼¯Æ÷Á¬½ÓÂ·ÓÉÆ÷ÉÏÏÔÊ¾µÄÃû×Ö£¬¸ñÊ½Îª GRT-SN
+ * 20220708   ä¿®å¤HTTPä¸‹è½½æŠ¥302é”™è¯¯ç é—®é¢˜ ï¼š é…ç½®HTTPå‚æ•°éœ€è¦é™„ç€è¯ä¹¦åŒ…ï¼ŒURL éœ€è¦ä¸ºHTTPSç½‘ç«™
+ * 20220708   å¢åŠ åœ¨ä¸‹è½½é‡‡é›†å™¨å›ºä»¶å®Œæˆåï¼Œæ ¡éªŒå›ºä»¶çš„è®¾å¤‡ç±»å‹
+ * 20220711   ä¿®æ”¹é‡‡é›†å™¨è¿æ¥è·¯ç”±å™¨ä¸Šæ˜¾ç¤ºçš„åå­—ï¼Œæ ¼å¼ä¸º GRT-SN
  *
- * 20220718   ĞŞ¸ÄĞø´«¹¦ÄÜ
- * 20220722   Ôö¼Ó±ê×¼ÅäÍøÄ£Ê½
+ * 20220718   ä¿®æ”¹ç»­ä¼ åŠŸèƒ½
+ * 20220722   å¢åŠ æ ‡å‡†é…ç½‘æ¨¡å¼
  */
 
 
 /**
- * MEMORY_CHECK_TAG   Ö¸Õë±äÁ¿´æ·ÅÔÚÈ«¾Ö¾²Ì¬Çø
- * MEMORY_CHECK_TAG   Ö¸Õë±äÁ¿Ö¸ÏòµÄÖµ²»ÄÜ¸Ä±ä
- * "memory_check"     ×Ö·û´®³£Á¿´æ·ÅÎÄ×Ö³£Á¿Çø
+ * MEMORY_CHECK_TAG   æŒ‡é’ˆå˜é‡å­˜æ”¾åœ¨å…¨å±€é™æ€åŒº
+ * MEMORY_CHECK_TAG   æŒ‡é’ˆå˜é‡æŒ‡å‘çš„å€¼ä¸èƒ½æ”¹å˜
+ * "memory_check"     å­—ç¬¦ä¸²å¸¸é‡å­˜æ”¾æ–‡å­—å¸¸é‡åŒº
  */
 
 
@@ -106,7 +106,7 @@ void IOT_SYSTEM_Init(void)
 {
     esp_err_t ret;
 
-    ret = nvs_flash_init();			//³õÊ¼»¯Ä¬ÈÏ NVS ·ÖÇø¡£
+    ret = nvs_flash_init();			//åˆå§‹åŒ–é»˜è®¤ NVS åˆ†åŒºã€‚
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         ret = nvs_flash_init();
@@ -125,10 +125,10 @@ void IOT_SYSTEM_Init(void)
     xTaskCreate(IOT_ModbusRXTask , "ModbusRXTask", 1024*3, NULL, configMAX_PRIORITIES-1, &URX_Handle);
 #endif
    xTaskCreate(IOT_ModbusTXTask, "ModbusTXTask", 1024*3, NULL, configMAX_PRIORITIES - 2, &UTX_Handle);
-   IOT_DTCInit(0); 				// Ä¬ÈÏ×Ö¶Î³õÊ¼»¯
+   IOT_DTCInit(0); 				// é»˜è®¤å­—æ®µåˆå§‹åŒ–
 
-   if(IOT_ESP_InverterType_Get()==1)  //»ñÈ¡DTC
-   IOT_ESP_InverterSN_Get();		//»ñÈ¡ĞòÁĞºÅ
+   if(IOT_ESP_InverterType_Get()==1)  //è·å–DTC
+   IOT_ESP_InverterSN_Get();		//è·å–åºåˆ—å·
 
    IOT_InCMDTime_uc(ESP_WRITE , 1);
    System_state.WIFI_BLEdisplay = 0;
@@ -136,15 +136,15 @@ void IOT_SYSTEM_Init(void)
    InvCommCtrl.CMDFlagGrop = 0;
    InvCommCtrl.CMDCur = HOLDING_GROP;
 
-   IOT_Inverter_RTData_TimeOut_Check_uc(ESP_WRITE , INVERTER_RT_DATA_TIMEOUT);  //ÖØÖÃÊµÊ±Êı¾İ³¬Ê±Ê±¼ä
-   IOT_WiFiConnect_Server_Timeout_uc(ESP_WRITE , CONNECT_SERVER_TIMEOUT);	 // ÖØÖÃÁ¬½Ó·şÎñÆ÷³¬Ê±Ê±¼ä
+   IOT_Inverter_RTData_TimeOut_Check_uc(ESP_WRITE , INVERTER_RT_DATA_TIMEOUT);  //é‡ç½®å®æ—¶æ•°æ®è¶…æ—¶æ—¶é—´
+   IOT_WiFiConnect_Server_Timeout_uc(ESP_WRITE , CONNECT_SERVER_TIMEOUT);	 // é‡ç½®è¿æ¥æœåŠ¡å™¨è¶…æ—¶æ—¶é—´
 
    printf("\r\n\r\n--------VERSION : %s 20220917 ----------\r\n\r\n",DATALOG_SVERSION);
 
 #if (test_wifi && 1)
 	uint8_t intdelay=0;
 	intdelay=5;
-	while(intdelay-- )   // ÉÏµçÑÓÊ±30 Ãë  led³£ÁÁ30s
+	while(intdelay-- )   // ä¸Šç”µå»¶æ—¶30 ç§’  ledå¸¸äº®30s
 	{
 	    vTaskDelay(1000 / portTICK_PERIOD_MS);
 	    ESP_LOGI(TAG, "IOT_System_ConfigInit  vTaskDelay intdelay =%d   DTC =0x%x\r\n",intdelay,InvCommCtrl.DTC );
@@ -153,21 +153,21 @@ void IOT_SYSTEM_Init(void)
 	     	break ;
 	    }
 	}
-	gpio_set_level(LEDBLUE_PIN,0); //Ãğ
-	gpio_set_level(LEDGREE_PIN,0); // ÁÁ
-	gpio_set_level(LEDREG_PIN,0); // ÁÁ
+	gpio_set_level(LEDBLUE_PIN,0); //ç­
+	gpio_set_level(LEDGREE_PIN,0); // äº®
+	gpio_set_level(LEDREG_PIN,0); // äº®
 #endif
 
 
 	IOT_SPI_FLASH_Init();
 	ESP_LOGI(TAG, "IOT_System_ConfigInit vTaskDelay OK\r\n");
 
-	IOT_SystemFunc_Init();		// ÏµÍ³¹¦ÄÜ³õÊ¼»¯
+	IOT_SystemFunc_Init();		// ç³»ç»ŸåŠŸèƒ½åˆå§‹åŒ–
 	IOT_AddParam_Init();
 
 	IOT_Reset_Reason_Printf();
 
-	System_state.uiSystemInitStatus = 1;	//ÏµÍ³³õÊ¼»¯Íê³É,Flag ÖÃ1
+	System_state.uiSystemInitStatus = 1;	//ç³»ç»Ÿåˆå§‹åŒ–å®Œæˆ,Flag ç½®1
 
 }
 
@@ -181,21 +181,21 @@ void app_main(void)
 	#if test_wifi
     IOT_ReadRecord_Init();
 	#endif
-//  RTOS ISR stack size [1536,327680]     1536 ×Ö½Ú ¶¨Ê±Æ÷ 0
-//  À¶ÑÀ·şÎñÆ÷
+//  RTOS ISR stack size [1536,327680]     1536 å­—èŠ‚ å®šæ—¶å™¨ 0
+//  è“ç‰™æœåŠ¡å™¨
     xTaskCreate(IOT_GattsTable_task , "Gattstask" , 1024 * 5, NULL, configMAX_PRIORITIES - 1, &BLE_Handle);
-//  wifiÁ¬½Ó
+//  wifiè¿æ¥
     xTaskCreate(IOT_WIFIstation_Task , "IOT_WIFITask" , 1024 * 5, NULL, configMAX_PRIORITIES-3, &WiFi_Handle);
-//  ÏµÍ³²ÎÊıÈÎÎñ
+//  ç³»ç»Ÿå‚æ•°ä»»åŠ¡
     xTaskCreate(IOT_SysTEM_Task , "SysTEMTask", 1024*3, NULL, configMAX_PRIORITIES - 8, &SYS_Handle);
-//  ¶¨Ê±Æ÷
+//  å®šæ—¶å™¨
     xTaskCreate(IOT_Timer_task , "Timertask", 1024*3, NULL, configMAX_PRIORITIES - 5, &Time_Handle);
-//  ·şÎñÆ÷Á¬½Ó
+//  æœåŠ¡å™¨è¿æ¥
 
 
     IOT_KEYSET0X06(56, System_state.WIFI_BLEdisplay);
     Key_init();
-    xTaskCreate(IOT_MbedtlsRead_task,"MbedtlsRtask", 1024*6, NULL, configMAX_PRIORITIES - 6, &NetRX_Handle);	//ÓÅÏÈ¼¶ÊıÖµÔ½Ğ¡£¬ÄÇÃ´´ËÈÎÎñµÄÓÅÏÈ¼¶Ô½µÍ£¬¿ÕÏĞÈÎÎñµÄÓÅÏÈ¼¶ÊÇ0
+    xTaskCreate(IOT_MbedtlsRead_task,"MbedtlsRtask", 1024*6, NULL, configMAX_PRIORITIES - 6, &NetRX_Handle);	//ä¼˜å…ˆçº§æ•°å€¼è¶Šå°ï¼Œé‚£ä¹ˆæ­¤ä»»åŠ¡çš„ä¼˜å…ˆçº§è¶Šä½ï¼Œç©ºé—²ä»»åŠ¡çš„ä¼˜å…ˆçº§æ˜¯0
     xTaskCreate(IOT_MbedtlsWrite_task,"MbedtlsWtask", 1024*6, NULL, configMAX_PRIORITIES - 7, &NetTX_Handle);
    // xTaskCreate(memory_check_task,"memory_check_task", 1024*4, NULL, configMAX_PRIORITIES-1, NULL);
     ESP_LOGI(TAG, "is main uxTaskGetStackHighWaterMark= %d !!!\r\n", uxTaskGetStackHighWaterMark(NULL));
@@ -254,6 +254,6 @@ void app_main(void)
 		}
 
 		vTaskDelay(100  / portTICK_PERIOD_MS);
-
+                printf("github\r\n");   
     }
 }
